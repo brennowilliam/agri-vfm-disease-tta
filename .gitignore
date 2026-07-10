@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# Artifacts (regenerated on Kaggle/Colab — never commit)
+checkpoints/
+features/
+*.npz
+*.pt
+*.pth
+
+# Local data (use Kaggle Datasets instead)
+data/
+*.zip
