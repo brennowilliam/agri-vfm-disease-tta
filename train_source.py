@@ -63,7 +63,7 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
     crit = nn.CrossEntropyLoss(label_smoothing=0.1)
-    scaler = torch.cuda.amp.GradScaler(enabled=device == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=device == "cuda")
 
     # ---- Train ----
     for epoch in range(args.epochs):
@@ -72,7 +72,7 @@ def main():
         for imgs, labels in tqdm(train_loader, desc=f"epoch {epoch+1}/{args.epochs}", leave=False):
             imgs, labels = imgs.to(device), labels.to(device)
             opt.zero_grad()
-            with torch.cuda.amp.autocast(enabled=device == "cuda"):
+            with torch.amp.autocast("cuda", enabled=device == "cuda"):
                 loss = crit(model(imgs), labels)
             scaler.scale(loss).backward()
             scaler.step(opt)
