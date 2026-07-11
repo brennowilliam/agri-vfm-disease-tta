@@ -1,19 +1,22 @@
 """Source-free, backprop-free online prototype test-time adaptation on cached features.
 
-The method contribution (Proposal 2). Prototypes are initialized from PlantVillage
-class-mean features (source-free init), then evolved online from confident PlantDoc
-(field) features, with two mechanisms aimed at the worst-group failure:
-  --anchor    : each update is pulled back toward the frozen SOURCE prototype (anti-drift)
-  --balanced  : per-class learning rate scaled by inverse frequency so common classes
-                (e.g. healthy leaves) don't overwrite rare diseases (imbalance-aware gating)
-  --reset K   : RDumb-style periodic reset to source prototypes (collapse insurance)
+The method contribution. Prototypes are initialized from PlantVillage class-mean
+features (source-free init), then evolved online from confident PlantDoc (field)
+features. Mechanisms (each a flag) target the worst-group failure:
+
+  --adapt        : enable online prototype updates (EMA from confident samples)
+  --anchor A     : pull each update back toward the frozen SOURCE prototype (anti-drift)
+  --balanced     : per-class learning rate scaled by inverse frequency (imbalance-aware)
+  --reset K      : RDumb-style periodic reset to source prototypes (collapse insurance)
+  --prior T      : online logit adjustment by running predicted-class frequency, so
+                   starved tail classes get predicted (the worst-group fix)
+  --sinkhorn     : extra final-pass line using balanced (Sinkhorn) assignment — a
+                   diagnostic for whether class-balancing can rescue the 0% tail
 
 Runs on cached .npz features only — CPU, seconds. Compare configs by worst-group.
 
-Examples:
-    python tta.py --backbone dinov2_vitb14                          # source prototypes, no adapt
-    python tta.py --backbone dinov2_vitb14 --adapt                  # naive online update
-    python tta.py --backbone dinov2_vitb14 --adapt --anchor 0.3 --balanced   # full recipe
+    python tta.py --backbone dinov2_vitb14 --sinkhorn                        # balancing on source protos
+    python tta.py --backbone dinov2_vitb14 --adapt --anchor 0.3 --prior 1.0  # anchored + prior-corrected
 """
 from __future__ import annotations
 
@@ -37,7 +40,6 @@ def l2norm(x: np.ndarray) -> np.ndarray:
 
 
 def source_prototypes(Xs: np.ndarray, ys: np.ndarray, C: int) -> np.ndarray:
-    """Normalized class-mean prototypes from source features. Empty classes -> zeros."""
     dim = Xs.shape[1]
     protos = np.zeros((C, dim))
     Xs = l2norm(Xs)
@@ -54,6 +56,18 @@ def softmax(z: np.ndarray) -> np.ndarray:
     return e / e.sum()
 
 
+def sinkhorn(logits: np.ndarray, n_iter: int = 50, eps: float = 0.05) -> np.ndarray:
+    """Balanced assignment (uniform class marginal), SwAV-style. logits (N,C) -> probs (N,C)."""
+    Q = np.exp((logits - logits.max()) / eps).T          # (C, N)
+    Q /= (Q.sum() + 1e-12)
+    K, N = Q.shape
+    for _ in range(n_iter):
+        Q *= ((1.0 / K) / (Q.sum(1, keepdims=True) + 1e-12))   # each class row -> 1/K
+        Q *= ((1.0 / N) / (Q.sum(0, keepdims=True) + 1e-12))   # each sample col -> 1/N
+    Q /= (Q.sum(0, keepdims=True) + 1e-12)                # per-sample distribution
+    return Q.T
+
+
 def run(args) -> None:
     C = NUM_CLASSES
     Xs, ys = _load(args.backbone, "plantvillage")
@@ -62,7 +76,8 @@ def run(args) -> None:
 
     P_src = source_prototypes(Xs, ys, C)   # frozen anchor
     P = P_src.copy()                       # working prototypes
-    counts = np.zeros(C)                   # per-class update counts (for imbalance gating)
+    counts = np.zeros(C)                   # per-class update counts (imbalance gating)
+    q = np.ones(C) / C                     # running predicted-class distribution (prior correction)
 
     order = np.arange(len(Xt))
     if args.shuffle:
@@ -71,16 +86,22 @@ def run(args) -> None:
     online_true, online_pred = [], []
     for step, i in enumerate(order):
         x = Xt[i]
-        sim = P @ x
-        pred = int(sim.argmax())
-        conf = float(softmax(sim / args.temp).max())
+        logits = (P @ x) / args.temp
+        if args.prior > 0:
+            logits = logits - args.prior * np.log(q + 1e-6)   # boost under-predicted classes
+        prob = softmax(logits)
+        pred = int(prob.argmax())
+        conf = float(prob.max())
         online_true.append(int(yt[i]))
         online_pred.append(pred)
+
+        if args.prior > 0:
+            onehot = np.zeros(C); onehot[pred] = 1.0
+            q = 0.99 * q + 0.01 * onehot
 
         if args.adapt and conf >= args.conf:
             a = args.alpha
             if args.balanced:
-                # rare classes keep full step; frequent classes are damped.
                 a *= min(1.0, np.sqrt((counts.mean() + 1.0) / (counts[pred] + 1.0)))
             new = (1 - a) * P[pred] + a * x
             if args.anchor > 0:
@@ -96,14 +117,22 @@ def run(args) -> None:
            f"{'adapt' if args.adapt else 'noadapt'}"
            f"{',anchor%.2f' % args.anchor if args.anchor > 0 else ''}"
            f"{',balanced' if args.balanced else ''}"
+           f"{',prior%.1f' % args.prior if args.prior > 0 else ''}"
            f"{',reset%d' % args.reset if args.reset > 0 else ''}]")
 
     M.print_summary(f"{tag} — ONLINE (predict-then-adapt)",
                     M.summarize(online_true, online_pred, C, IDX_TO_CLASS))
-    # Final-pass: re-classify the whole target with the adapted prototypes.
-    final_pred = (Xt @ P.T).argmax(1)
+
+    final_logits = (Xt @ P.T) / args.temp
+    if args.prior > 0:
+        final_logits = final_logits - args.prior * np.log(q + 1e-6)
     M.print_summary(f"{tag} — FINAL PASS (adapted prototypes)",
-                    M.summarize(yt, final_pred, C, IDX_TO_CLASS))
+                    M.summarize(yt, final_logits.argmax(1), C, IDX_TO_CLASS))
+
+    if args.sinkhorn:
+        bal_pred = sinkhorn(Xt @ P.T / args.temp).argmax(1)
+        M.print_summary(f"{tag} — FINAL PASS + Sinkhorn (balanced assignment)",
+                        M.summarize(yt, bal_pred, C, IDX_TO_CLASS))
 
 
 def main():
@@ -112,6 +141,8 @@ def main():
     ap.add_argument("--adapt", action="store_true", help="enable online prototype updates")
     ap.add_argument("--anchor", type=float, default=0.0, help="pull-back toward source proto (0..1)")
     ap.add_argument("--balanced", action="store_true", help="imbalance-aware per-class LR")
+    ap.add_argument("--prior", type=float, default=0.0, help="online logit-adjustment strength (0=off)")
+    ap.add_argument("--sinkhorn", action="store_true", help="add a balanced-assignment final-pass line")
     ap.add_argument("--reset", type=int, default=0, help="steps between RDumb resets (0=off)")
     ap.add_argument("--conf", type=float, default=0.5, help="confidence threshold to update")
     ap.add_argument("--alpha", type=float, default=0.1, help="base EMA step")
