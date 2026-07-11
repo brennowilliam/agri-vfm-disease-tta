@@ -49,7 +49,7 @@ def fig1_scaling(outdir: str) -> None:
         ax.set_xticks(x); ax.set_xticklabels([f"DINOv2\n{b}" for b in ORDER])
         ax.set_ylim(0, 60); ax.grid(alpha=0.3)
         if tgt == "PlantDoc":
-            ax.set_ylabel("accuracy (%)")
+            ax.set_ylabel("score (%)")
     axes[0].legend(fontsize=7, loc="upper left")
     fig.suptitle("Balanced assignment lifts macro-F1 and the worst-group tail across backbones",
                  fontsize=10)
