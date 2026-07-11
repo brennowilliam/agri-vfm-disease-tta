@@ -71,7 +71,7 @@ def sinkhorn(logits: np.ndarray, n_iter: int = 50, eps: float = 0.05) -> np.ndar
 def run(args) -> None:
     C = NUM_CLASSES
     Xs, ys = _load(args.backbone, "plantvillage")
-    Xt, yt = _load(args.backbone, "plantdoc")
+    Xt, yt = _load(args.backbone, args.target)
     Xt = l2norm(Xt)
 
     P_src = source_prototypes(Xs, ys, C)   # frozen anchor
@@ -113,7 +113,7 @@ def run(args) -> None:
             P = P_src.copy()
             counts[:] = 0
 
-    tag = (f"{args.backbone} TTA["
+    tag = (f"{args.backbone}->{args.target} TTA["
            f"{'adapt' if args.adapt else 'noadapt'}"
            f"{',anchor%.2f' % args.anchor if args.anchor > 0 else ''}"
            f"{',balanced' if args.balanced else ''}"
@@ -138,6 +138,7 @@ def run(args) -> None:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backbone", default="dinov2_vitb14")
+    ap.add_argument("--target", default="plantdoc", help="field target: plantdoc | plantwild")
     ap.add_argument("--adapt", action="store_true", help="enable online prototype updates")
     ap.add_argument("--anchor", type=float, default=0.0, help="pull-back toward source proto (0..1)")
     ap.add_argument("--balanced", action="store_true", help="imbalance-aware per-class LR")

@@ -22,7 +22,7 @@ class Config:
     plantdoc_root: str = field(default_factory=lambda: _env(
         "PLANTDOC_ROOT", "/kaggle/input/plantdoc-dataset"))
     plantwild_root: str = field(default_factory=lambda: _env(
-        "PLANTWILD_ROOT", "/kaggle/input/plantwild"))
+        "PLANTWILD_ROOT", "/kaggle/working/plantwild/plantwild/images"))
     cassava_root: str = field(default_factory=lambda: _env(
         "CASSAVA_ROOT", "/kaggle/input/cassava-leaf-disease-classification"))
 

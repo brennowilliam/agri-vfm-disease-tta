@@ -47,6 +47,7 @@ def load_backbone(name: str, device: str):
 DOMAIN_BUILDERS = {
     "plantvillage": D.plantvillage,
     "plantdoc": D.plantdoc,
+    "plantwild": D.plantwild,
 }
 
 

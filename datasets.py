@@ -86,6 +86,12 @@ def plantdoc(transform=None, return_path: bool = False, split: str = "all") -> A
         resolve_dirs(CFG.plantdoc_root, "plantdoc", split), transform, return_path)
 
 
+def plantwild(transform=None, return_path: bool = False) -> AlignedFolderDataset:
+    """PlantWild field target (89-class v1; 27 overlap the unified label space)."""
+    return AlignedFolderDataset(
+        resolve_dirs(CFG.plantwild_root, "plantwild"), transform, return_path)
+
+
 def stratified_split(ds: AlignedFolderDataset, val_frac: float = 0.2, seed: int = CFG.seed):
     """Class-stratified train/val index split (for PlantVillage source training)."""
     rng = np.random.default_rng(seed)
