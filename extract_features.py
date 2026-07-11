@@ -54,8 +54,10 @@ DOMAIN_BUILDERS = {
 @torch.no_grad()
 def extract(model, loader, device) -> tuple[np.ndarray, np.ndarray, list[str]]:
     feats, labels, paths = [], [], []
+    use_amp = device == "cuda"
     for imgs, lbls, pths in tqdm(loader, desc="extract", leave=False):
-        out = model(imgs.to(device))
+        with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+            out = model(imgs.to(device))
         if isinstance(out, (tuple, list)):
             out = out[0]
         feats.append(out.float().cpu().numpy())
