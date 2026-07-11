@@ -67,7 +67,7 @@ def extract(model, loader, device) -> tuple[np.ndarray, np.ndarray, list[str]]:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backbone", default="dinov2_vitb14",
-                    choices=["dinov2_vits14", "dinov2_vitb14", "clip_vitb32"])
+                    choices=["dinov2_vits14", "dinov2_vitb14", "dinov2_vitl14", "clip_vitb32"])
     ap.add_argument("--domains", nargs="+", default=["plantvillage", "plantdoc"],
                     choices=list(DOMAIN_BUILDERS))
     args = ap.parse_args()

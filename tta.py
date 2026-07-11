@@ -56,16 +56,29 @@ def softmax(z: np.ndarray) -> np.ndarray:
     return e / e.sum()
 
 
-def sinkhorn(logits: np.ndarray, n_iter: int = 50, eps: float = 0.05) -> np.ndarray:
-    """Balanced assignment (uniform class marginal), SwAV-style. logits (N,C) -> probs (N,C)."""
+def sinkhorn(logits: np.ndarray, r: np.ndarray | None = None,
+             n_iter: int = 50, eps: float = 0.05) -> np.ndarray:
+    """Balanced assignment via Sinkhorn-Knopp. logits (N,C) -> probs (N,C).
+
+    `r` is the target CLASS marginal (length C): uniform (1/C each) forces perfectly
+    balanced classes; an estimated distribution relaxes that toward the real target."""
+    N, K = logits.shape
+    if r is None:
+        r = np.ones(K) / K
+    r = r / (r.sum() + 1e-12)
     Q = np.exp((logits - logits.max()) / eps).T          # (C, N)
     Q /= (Q.sum() + 1e-12)
-    K, N = Q.shape
     for _ in range(n_iter):
-        Q *= ((1.0 / K) / (Q.sum(1, keepdims=True) + 1e-12))   # each class row -> 1/K
-        Q *= ((1.0 / N) / (Q.sum(0, keepdims=True) + 1e-12))   # each sample col -> 1/N
-    Q /= (Q.sum(0, keepdims=True) + 1e-12)                # per-sample distribution
+        Q *= (r[:, None] / (Q.sum(1, keepdims=True) + 1e-12))   # each class row -> r_c
+        Q *= ((1.0 / N) / (Q.sum(0, keepdims=True) + 1e-12))    # each sample col -> 1/N
+    Q /= (Q.sum(0, keepdims=True) + 1e-12)               # per-sample distribution
     return Q.T
+
+
+def estimate_class_marginal(logits: np.ndarray, C: int, smooth: float = 1.0) -> np.ndarray:
+    """Estimate target class distribution from raw argmax predictions (add-one smoothed)."""
+    counts = np.bincount(logits.argmax(1), minlength=C).astype(np.float64)
+    return (counts + smooth) / (counts.sum() + smooth * C)
 
 
 def run(args) -> None:
@@ -130,8 +143,14 @@ def run(args) -> None:
                     M.summarize(yt, final_logits.argmax(1), C, IDX_TO_CLASS))
 
     if args.sinkhorn:
-        bal_pred = sinkhorn(Xt @ P.T / args.temp).argmax(1)
-        M.print_summary(f"{tag} — FINAL PASS + Sinkhorn (balanced assignment)",
+        sk_logits = Xt @ P.T / args.temp
+        r = None
+        mode = "uniform"
+        if args.prior_mode == "estimated":
+            r = estimate_class_marginal(sk_logits, C)
+            mode = "estimated-prior"
+        bal_pred = sinkhorn(sk_logits, r=r).argmax(1)
+        M.print_summary(f"{tag} — FINAL PASS + Sinkhorn ({mode})",
                         M.summarize(yt, bal_pred, C, IDX_TO_CLASS))
 
 
@@ -144,6 +163,8 @@ def main():
     ap.add_argument("--balanced", action="store_true", help="imbalance-aware per-class LR")
     ap.add_argument("--prior", type=float, default=0.0, help="online logit-adjustment strength (0=off)")
     ap.add_argument("--sinkhorn", action="store_true", help="add a balanced-assignment final-pass line")
+    ap.add_argument("--prior_mode", default="uniform", choices=["uniform", "estimated"],
+                    help="Sinkhorn class marginal: uniform (balanced) or estimated from predictions")
     ap.add_argument("--reset", type=int, default=0, help="steps between RDumb resets (0=off)")
     ap.add_argument("--conf", type=float, default=0.5, help="confidence threshold to update")
     ap.add_argument("--alpha", type=float, default=0.1, help="base EMA step")
