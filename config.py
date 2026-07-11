@@ -48,7 +48,7 @@ CFG = Config()
 BACKBONES = {
     "dinov2_vits14": ("timm", "vit_small_patch14_dinov2.lvd142m"),
     "dinov2_vitb14": ("timm", "vit_base_patch14_dinov2.lvd142m"),
-    "clip_vitb32": ("open_clip", ("ViT-B-32", "openai")),
+    "clip_vitb32": ("open_clip", ("ViT-B-32-quickgelu", "openai")),
     # Source-training backbones:
     "resnet50": ("timm", "resnet50.a1_in1k"),
     "vit_b16": ("timm", "vit_base_patch16_224.augreg2_in21k_ft_in1k"),

@@ -12,6 +12,7 @@ VFM test-time adaptation. Designed to run on **Kaggle free tier** (2×T4) or Col
 | **Phase 1** — source training + collapse | `train_source.py` | source checkpoint + source-only PlantDoc accuracy (~30.78% target) |
 | **Phase 2** — frozen features | `extract_features.py` | cached DINOv2 / CLIP embeddings (`.npy`) for every dataset |
 | Baselines from cache | `eval_baselines.py` | DINOv2 linear-probe / kNN, CLIP zero-shot |
+| **Phase 3** — the method | `tta.py` | source-anchored, imbalance-gated online prototype TTA (backprop-free, CPU) |
 
 ## Quickstart (Kaggle)
 
