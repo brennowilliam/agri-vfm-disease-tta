@@ -56,6 +56,29 @@ def softmax(z: np.ndarray) -> np.ndarray:
     return e / e.sum()
 
 
+def knn_logits(Xt: np.ndarray, Xs: np.ndarray, ys: np.ndarray, C: int,
+               k: int = 20, temp: float = 0.1) -> np.ndarray:
+    """Per-class soft kNN score: for each target sample and class c, the mean cosine
+    similarity to its k nearest source neighbours *of class c*. (N,C) logits.
+
+    Captures each class's multi-modal structure (why kNN out-accuracies nearest-mean
+    prototypes) while still producing a dense logit matrix Sinkhorn can balance —
+    the 'best-of-both' candidate: kNN accuracy + balanced-assignment tail rescue."""
+    Xt = l2norm(Xt)
+    Xs = l2norm(Xs)
+    N = Xt.shape[0]
+    L = np.full((N, C), -1.0)
+    for c in range(C):
+        Xc = Xs[ys == c]
+        if Xc.shape[0] == 0:
+            continue
+        sims = Xt @ Xc.T                              # (N, M_c)
+        kk = min(k, Xc.shape[0])
+        topk = np.partition(sims, -kk, axis=1)[:, -kk:]  # k best per sample
+        L[:, c] = topk.mean(1)
+    return L / temp
+
+
 def sinkhorn(logits: np.ndarray, r: np.ndarray | None = None,
              n_iter: int = 50, eps: float = 0.05) -> np.ndarray:
     """Balanced assignment via Sinkhorn-Knopp. logits (N,C) -> probs (N,C).
@@ -86,6 +109,18 @@ def run(args) -> None:
     Xs, ys = _load(args.backbone, "plantvillage")
     Xt, yt = _load(args.backbone, args.target)
     Xt = l2norm(Xt)
+
+    # --- kNN scorer path: best-of-both candidate (kNN accuracy + optional balancing) ---
+    if args.scorer == "knn":
+        L = knn_logits(Xt, Xs, ys, C, k=args.k, temp=args.temp)
+        tag = f"{args.backbone}->{args.target} kNN-scorer(k={args.k})"
+        M.print_summary(f"{tag} — raw", M.summarize(yt, L.argmax(1), C, IDX_TO_CLASS))
+        if args.sinkhorn:
+            r = estimate_class_marginal(L, C) if args.prior_mode == "estimated" else None
+            mode = "estimated-prior" if args.prior_mode == "estimated" else "uniform"
+            M.print_summary(f"{tag} + Sinkhorn ({mode})",
+                            M.summarize(yt, sinkhorn(L, r=r).argmax(1), C, IDX_TO_CLASS))
+        return
 
     P_src = source_prototypes(Xs, ys, C)   # frozen anchor
     P = P_src.copy()                       # working prototypes
@@ -158,6 +193,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backbone", default="dinov2_vitb14")
     ap.add_argument("--target", default="plantdoc", help="field target: plantdoc | plantwild")
+    ap.add_argument("--scorer", default="proto", choices=["proto", "knn"],
+                    help="proto = class-mean prototypes; knn = per-class kNN affinity (best-of-both)")
+    ap.add_argument("--k", type=int, default=20, help="neighbours for the kNN scorer")
     ap.add_argument("--adapt", action="store_true", help="enable online prototype updates")
     ap.add_argument("--anchor", type=float, default=0.0, help="pull-back toward source proto (0..1)")
     ap.add_argument("--balanced", action="store_true", help="imbalance-aware per-class LR")
