@@ -37,58 +37,53 @@ def _stratified_split(ys, C, frac_fit=0.7, seed=0):
     return np.array(sorted(fit)), np.array(sorted(cal))
 
 
-def build(Xs, ys, C, temp=0.1, k=20):
-    """Prototypes from a source FIT split; confusion/calibration from a held-out source CAL split."""
+def _onehot_logits(preds, C):
+    """Turn hard predictions into a trivial logit matrix so a non-transductive method plugs into
+    the logit-based bootstrap (argmax recovers the prediction)."""
+    L = np.full((len(preds), C), -1.0); L[np.arange(len(preds)), preds] = 1.0
+    return L
+
+
+def build(Xs, ys, C, Xt, temp=0.1, k=20):
+    """Precompute per-sample logits ONCE for the full target; return (assign_fn, L) per method plus
+    a context dict. Prototypes from a source FIT split; confusion/calibration from a held-out CAL split."""
     fit, cal = _stratified_split(ys, C)
-    Xs_fit_n = l2norm(Xs[fit])
     P = source_prototypes(Xs[fit], ys[fit], C)
     cal_logits = (l2norm(Xs[cal]) @ P.T) / temp                 # HELD-OUT source logits
     conf, src_prior = LS.source_confusion(cal_logits, ys[cal], C)
-    T, b = LS.bcts_calibrate(cal_logits, ys[cal], C)            # BCTS on held-out source
+    T, b = LS.bcts_calibrate(cal_logits, ys[cal], C)
     Xs_all_n = l2norm(Xs)
-    ctx = dict(P=P, conf=conf, src_prior=src_prior, T=T, b=b, Xs_all_n=Xs_all_n, ys=ys,
-               temp=temp, k=k, C=C)
 
-    def proto_logits(X):
-        return (l2norm(X) @ P.T) / temp
-
-    ctx["proto_logits"] = proto_logits
-
-    def m_source_proto(X): return proto_logits(X).argmax(1)
-    def m_knn_affinity(X): return knn_logits(l2norm(X), Xs_all_n, ys, C, k, temp).argmax(1)
-    def m_uniform_proto(X): return sinkhorn(proto_logits(X)).argmax(1)
-    def m_uniform_knn(X): return sinkhorn(knn_logits(l2norm(X), Xs_all_n, ys, C, k, temp)).argmax(1)
-
-    def m_otter(X):                       # OTTER = OT to a BBSE-estimated prior (held-out confusion)
-        L = proto_logits(X); r = LS.bbse_prior(conf, L, src_prior)
-        return sinkhorn(L, r=r).argmax(1)
-
-    def m_mlls_cal(X):                     # calibrated MLLS prior -> Sinkhorn
-        L = proto_logits(X)
-        r = LS.mlls_prior(LS.apply_calibration(L, T, b), src_prior)
-        return sinkhorn(L, r=r).argmax(1)
-
-    # sklearn k-NN classifier (the "standard" k-NN, within THIS backbone)
+    # --- precompute per-sample logits for the FULL target (expensive parts done once) ---
+    L_proto = (l2norm(Xt) @ P.T) / temp
+    L_knn = knn_logits(l2norm(Xt), Xs_all_n, ys, C, k, temp)
     knn_clf = KNeighborsClassifier(n_neighbors=k, metric="cosine", n_jobs=-1)
     knn_clf.fit(normalize(Xs), ys)
-    def m_knn_clf(X): return knn_clf.predict(normalize(X))
+    L_knnclf = _onehot_logits(knn_clf.predict(normalize(Xt)), C)
 
-    methods = {
-        "source prototypes": m_source_proto,
-        "k-NN classifier (sklearn)": m_knn_clf,
-        "k-NN affinity (scorer)": m_knn_affinity,
-        "OTTER (BBSE, held-out)": m_otter,
-        "Sinkhorn + calib-MLLS": m_mlls_cal,
-        "Ours: uniform-Sinkhorn (proto)": m_uniform_proto,
-        "Ours: uniform-Sinkhorn (kNN)": m_uniform_knn,
-    }
+    def a_argmax(L): return L.argmax(1)
+    def a_uniform(L): return sinkhorn(L).argmax(1)
+    def a_otter(L): return sinkhorn(L, r=LS.bbse_prior(conf, L, src_prior)).argmax(1)
+    def a_mlls(L): return sinkhorn(L, r=LS.mlls_prior(LS.apply_calibration(L, T, b), src_prior)).argmax(1)
+
+    # (name, assign_fn, precomputed logit matrix)
+    methods = [
+        ("source prototypes", a_argmax, L_proto),
+        ("k-NN classifier (sklearn)", a_argmax, L_knnclf),
+        ("k-NN affinity (scorer)", a_argmax, L_knn),
+        ("OTTER (BBSE, held-out)", a_otter, L_proto),
+        ("Sinkhorn + calib-MLLS", a_mlls, L_proto),
+        ("Ours: uniform-Sinkhorn (proto)", a_uniform, L_proto),
+        ("Ours: uniform-Sinkhorn (kNN)", a_uniform, L_knn),
+    ]
+    ctx = dict(P=P, conf=conf, src_prior=src_prior, T=T, b=b, temp=temp, C=C, L_proto=L_proto)
     return methods, ctx
 
 
 def diagnostics(ctx, Xt, yt):
     """Point-estimate controls that decide the headline (use yt; not deployable methods)."""
     C = ctx["C"]
-    L = ctx["proto_logits"](Xt)
+    L = ctx["L_proto"]
     true_prior = np.bincount(yt, minlength=C).astype(float); true_prior /= true_prior.sum()
     uniform = np.ones(C) / C
     bbse = LS.bbse_prior(ctx["conf"], L, ctx["src_prior"])
@@ -128,14 +123,14 @@ def main():
     Xt, yt = _load(args.backbone, args.target)
     yt = yt.astype(int)
     C = NUM_CLASSES
-    methods, ctx = build(Xs, ys, C, temp=args.temp)
+    methods, ctx = build(Xs, ys, C, Xt, temp=args.temp)
 
     print(f"\n=== {args.backbone} -> {args.target}  (n={len(yt)}, bootstrap={args.bootstrap}) ===")
     print("Hyperparameters fixed a priori (not tuned on target): temp=0.1, sinkhorn eps=0.05, iters=50, k=20, min_support=10")
-    for name, fn in methods.items():
-        t0 = time.perf_counter(); _ = fn(Xt); dt = (time.perf_counter() - t0) * 1000
-        r = BS.bootstrap_ci(fn, Xt, yt, B=args.bootstrap)
-        print(BS.fmt(name, r) + f"   [{dt:6.0f} ms]")
+    for name, assign_fn, L in methods:
+        t0 = time.perf_counter(); _ = assign_fn(L); dt = (time.perf_counter() - t0) * 1000
+        r = BS.bootstrap_ci_logits(assign_fn, L, yt, B=args.bootstrap)
+        print(BS.fmt(name, r) + f"   [{dt:6.0f} ms/assign]")
 
     diagnostics(ctx, Xt, yt)
 
