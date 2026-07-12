@@ -19,6 +19,25 @@ from class_alignment import NUM_CLASSES, IDX_TO_CLASS
 import metrics as M
 
 
+def _fast_metrics(yb, pb, C, eligible):
+    """All five metrics in one bincount pass (no sklearn, no redundant per-class recompute) —
+    ~50x faster than the generic metrics in a 2000-iteration bootstrap loop."""
+    tp = np.bincount(yb[yb == pb], minlength=C).astype(float)   # true positives per class
+    true = np.bincount(yb, minlength=C).astype(float)
+    pred = np.bincount(pb, minlength=C).astype(float)
+    acc = tp.sum() / len(yb)
+    present = true > 0
+    recall = np.divide(tp, true, out=np.full(C, np.nan), where=true > 0)
+    denom = pred + true
+    f1 = np.divide(2 * tp, denom, out=np.zeros(C), where=denom > 0)
+    macro_f1 = float(f1[present].mean()) if present.any() else 0.0
+    balanced = float(np.nanmean(recall)) if present.any() else 0.0
+    rel = recall[eligible]; rel = rel[~np.isnan(rel)]
+    wg = float(rel.min()) if rel.size else np.nan
+    dead = int(np.sum(rel < 0.05))
+    return acc, macro_f1, balanced, wg, dead
+
+
 def bootstrap_ci_logits(assign_fn, L: np.ndarray, yt: np.ndarray, B: int = 2000,
                         seed: int = 42, min_support: int = 10) -> dict:
     """assign_fn(L_subset) -> predictions. L is the precomputed per-sample logit matrix (N x C)."""
@@ -31,12 +50,8 @@ def bootstrap_ci_logits(assign_fn, L: np.ndarray, yt: np.ndarray, B: int = 2000,
     acc, mf1, bal, wg, dead = [], [], [], [], []
     for _ in range(B):
         idx = rng.integers(0, N, size=N)
-        yb, pb = yt[idx], assign_fn(L[idx])
-        acc.append(M.accuracy(yb, pb))
-        mf1.append(M.macro_f1(yb, pb, NUM_CLASSES))
-        bal.append(M.balanced_accuracy(yb, pb, NUM_CLASSES))
-        wg.append(M.worst_group_accuracy(yb, pb, NUM_CLASSES, eligible=eligible))
-        dead.append(M.dead_classes(yb, pb, NUM_CLASSES, min_support=min_support))
+        a, f, ba, w, d = _fast_metrics(yt[idx], assign_fn(L[idx]), NUM_CLASSES, eligible)
+        acc.append(a); mf1.append(f); bal.append(ba); wg.append(w); dead.append(d)
 
     def stat(a):
         a = np.asarray(a) * 100.0

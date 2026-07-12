@@ -123,14 +123,15 @@ def main():
     Xt, yt = _load(args.backbone, args.target)
     yt = yt.astype(int)
     C = NUM_CLASSES
+    print(f"precomputing logits (source neighbour search, calibration)...", flush=True)
     methods, ctx = build(Xs, ys, C, Xt, temp=args.temp)
 
     print(f"\n=== {args.backbone} -> {args.target}  (n={len(yt)}, bootstrap={args.bootstrap}) ===")
-    print("Hyperparameters fixed a priori (not tuned on target): temp=0.1, sinkhorn eps=0.05, iters=50, k=20, min_support=10")
+    print("Hyperparameters fixed a priori (not tuned on target): temp=0.1, sinkhorn eps=0.05, iters=50, k=20, min_support=10", flush=True)
     for name, assign_fn, L in methods:
         t0 = time.perf_counter(); _ = assign_fn(L); dt = (time.perf_counter() - t0) * 1000
         r = BS.bootstrap_ci_logits(assign_fn, L, yt, B=args.bootstrap)
-        print(BS.fmt(name, r) + f"   [{dt:6.0f} ms/assign]")
+        print(BS.fmt(name, r) + f"   [{dt:6.0f} ms/assign]", flush=True)
 
     diagnostics(ctx, Xt, yt)
 
