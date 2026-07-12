@@ -13,6 +13,9 @@ from __future__ import annotations
 import argparse
 import os
 
+# Reduce CUDA fragmentation OOMs on the 15 GB T4 (must be set before torch loads CUDA).
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -51,7 +54,7 @@ def main():
                     help="0 = auto (16 for ViT-L to fit a 15GB T4 under backprop, else 64)")
     args = ap.parse_args()
     if args.batch == 0:
-        args.batch = 16 if args.backbone == "dinov2_vitl14" else 64
+        args.batch = 8 if args.backbone == "dinov2_vitl14" else 64
 
     D.seed_everything()
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -69,19 +72,23 @@ def main():
     ds = DOMAIN_BUILDERS[args.target](transform=preprocess, return_path=False)
     loader = DataLoader(ds, batch_size=args.batch, shuffle=False, num_workers=CFG.num_workers)
 
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    use_amp = device == "cuda"
     ys_all, yp_all = [], []
     for imgs, labels in loader:
         imgs = imgs.to(device)
-        feat = model(imgs)
-        if isinstance(feat, (tuple, list)):
-            feat = feat[0]
-        feat = feat / (feat.norm(dim=-1, keepdim=True) + 1e-8)
-        logits = (feat @ P.T) / args.temp
+        with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
+            feat = model(imgs)
+            if isinstance(feat, (tuple, list)):
+                feat = feat[0]
+            feat = feat / (feat.norm(dim=-1, keepdim=True) + 1e-8)
+            logits = (feat.float() @ P.T) / args.temp
+            probs = logits.softmax(1)
+            ent = -(probs * torch.log(probs + 1e-12)).sum(1).mean()
         # predict (before this batch's update), then adapt on entropy
         yp_all.append(logits.argmax(1).detach().cpu().numpy())
         ys_all.append(labels.numpy())
-        probs = logits.softmax(1)
-        ent = -(probs * torch.log(probs + 1e-12)).sum(1).mean()
         opt.zero_grad(); ent.backward(); opt.step()
 
     s = M.summarize(np.concatenate(ys_all), np.concatenate(yp_all), C, IDX_TO_CLASS)
