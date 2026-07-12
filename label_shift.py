@@ -25,6 +25,36 @@ def _softmax_rows(logits: np.ndarray) -> np.ndarray:
     return e / (e.sum(axis=1, keepdims=True) + 1e-12)
 
 
+def bcts_calibrate(src_logits: np.ndarray, src_labels: np.ndarray, C: int,
+                   iters: int = 300, lr: float = 0.05) -> tuple[float, np.ndarray]:
+    """Bias-Corrected Temperature Scaling (Alexandari et al., 2020): fit a scalar temperature T and
+    per-class bias b on a held-out source split by minimising NLL. Calibrated logits = z/T + b.
+    MLLS is 'hard-to-beat' only WITH this calibration, so we must apply it before claiming MLLS fails."""
+    z = src_logits
+    y = src_labels
+    onehot = np.zeros((len(y), C)); onehot[np.arange(len(y)), y] = 1.0
+    logT = 0.0                      # optimise log T for positivity
+    b = np.zeros(C)
+    for _ in range(iters):
+        T = np.exp(logT)
+        p = _softmax_rows(z / T + b)
+        g = (p - onehot)                                   # dNLL/d(calibrated logits)
+        grad_b = g.mean(axis=0)
+        grad_logT = float((g * (-z / T)).sum(axis=1).mean())   # dz/dlogT = -z/T
+        b -= lr * grad_b
+        logT -= lr * grad_logT
+    return float(np.exp(logT)), b
+
+
+def apply_calibration(logits: np.ndarray, T: float, b: np.ndarray) -> np.ndarray:
+    return logits / T + b
+
+
+def tv_distance(p: np.ndarray, q: np.ndarray) -> float:
+    """Total-variation distance between two priors (diagnostic: estimated vs true target prior)."""
+    return float(0.5 * np.abs(np.asarray(p) - np.asarray(q)).sum())
+
+
 def source_confusion(src_logits: np.ndarray, src_labels: np.ndarray, C: int) -> tuple[np.ndarray, np.ndarray]:
     """Soft confusion matrix Ĉ[k,j] = E_source[ p̂_j(x) | y=k ] and source prior.
 
