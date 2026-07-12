@@ -47,8 +47,11 @@ def main():
     ap.add_argument("--target", default="plantdoc", choices=["plantdoc", "plantwild"])
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--temp", type=float, default=0.1)
-    ap.add_argument("--batch", type=int, default=64)
+    ap.add_argument("--batch", type=int, default=0,
+                    help="0 = auto (16 for ViT-L to fit a 15GB T4 under backprop, else 64)")
     args = ap.parse_args()
+    if args.batch == 0:
+        args.batch = 16 if args.backbone == "dinov2_vitl14" else 64
 
     D.seed_everything()
     device = "cuda" if torch.cuda.is_available() else "cpu"
