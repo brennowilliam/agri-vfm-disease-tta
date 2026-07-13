@@ -47,13 +47,16 @@ def fig1_scaling(outdir: str) -> None:
         ax.plot(x, mf_snk, "s-", color=BLUE, label="macro-F1 (+Sinkhorn)")
         ax.set_title(tgt)
         ax.set_xticks(x); ax.set_xticklabels([f"DINOv2\n{b}" for b in ORDER])
-        ax.set_ylim(0, 60); ax.grid(alpha=0.3)
+        ax.set_ylim(0, 62); ax.grid(alpha=0.3)
         if tgt == "PlantDoc":
             ax.set_ylabel("score (%)")
-    axes[0].legend(fontsize=7, loc="upper left")
+    # single shared legend BELOW the panels so it never overlaps the lines
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="lower center", ncol=2, fontsize=8,
+               frameon=False, bbox_to_anchor=(0.5, -0.06))
     fig.suptitle("Balanced assignment lifts macro-F1 and the worst-group tail across backbones",
                  fontsize=10)
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.02, 1, 1))
     for ext in ("png", "pdf"):
         fig.savefig(os.path.join(outdir, f"fig1_scaling.{ext}"), dpi=200, bbox_inches="tight")
     plt.close(fig)
